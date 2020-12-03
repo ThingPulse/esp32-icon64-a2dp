@@ -1,6 +1,34 @@
+/*
+MIT License
+
+Copyright (c) 2020 ThingPulse GmbH
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
 #include "BluetoothA2DPSink.h"
 #include <arduinoFFT.h> 
-#include <SmartLeds.h>
+#include <FastLED.h>
+#include "AudioGeneratorAAC.h"
+#include "AudioOutputI2S.h"
+#include "AudioFileSourcePROGMEM.h"
+#include "sounds.h"
 #include "icons.h"
 
 
@@ -9,23 +37,28 @@
 #define I2S_DOUT      25
 #define I2S_BCLK      26
 #define I2S_LRC       22
-#define MODE_PIN       33
+#define MODE_PIN      33
 
 // LED Settings
 #define LED_COUNT   64
 #define LED_PIN     32
 #define CHANNEL     0
 
+#define NUM_LEDS 64
+#define DATA_PIN 32
+
 // FFT Settings
 #define NUM_BANDS  8
 #define SAMPLES 512              
 #define SAMPLING_FREQUENCY 44100 
 
+#define BRIGHTNESS 100
+
 #define DEVICE_NAME "ThingPulse-Icon64"
 
 arduinoFFT FFT = arduinoFFT();
 BluetoothA2DPSink a2dp_sink;
-SmartLed leds( LED_WS2812B, LED_COUNT, LED_PIN, CHANNEL, DoubleBuffer );
+CRGB leds[NUM_LEDS];
 
 int pushButton = 39;
 
@@ -41,7 +74,6 @@ QueueHandle_t queue;
 
 int16_t sample_l_int;
 int16_t sample_r_int;
-float in;
 
 uint32_t animationCounter = 0;
 
@@ -82,7 +114,7 @@ void createBands(int i, int dsize) {
     band =  4; // 2000Hz
   } else if (i <= 53) {
     band =  5; // 4000Hz
-  } else if (i <= 200) {
+  } else if (i <= 106) {
     band =  6;// 8000Hz
   } else {
     band = 7;
@@ -118,25 +150,19 @@ void renderFFT(void * parameter){
       // Release handle
       xQueueReceive(queue, &item, 0);
 
-      uint8_t vuMeterBands[NUM_BANDS];
+      uint8_t intensity;
       
-      Hsv black = Rgb(0x00, 0x00, 0x00);
-      black.v = black.v * brightness;
+      FastLED.clear();
+      FastLED.setBrightness(BRIGHTNESS);
       for (byte band = 0; band < NUM_BANDS; band++) {
-        vuMeterBands[band] = map(peak[band], 1, amplitude, 0, 8);
+        intensity = map(peak[band], 1, amplitude, 0, 8);
 
         for (int i = 0; i < 8; i++) {
-          Hsv color = Hsv(Rgb(0x00, 0xFF, 0x09));
-          color.h = i * 32;
-          color.v = color.v * brightness;
-          leds[getLedIndex(7 - i, 7 - band)] = (i >= vuMeterBands[band]) ? black : color;
+          leds[getLedIndex(7 - i, 7 - band)] = (i >= intensity) ? CHSV(0, 0, 0) : CHSV(i * 16, 255, 255);
         }
       }
-      // Take the message out of the queue
-      leds.wait();
-      leds.show();
 
-      
+      FastLED.show();
 
       if ((millis() - lastVisualizationUpdate) > 1000) {
         log_e("Fps: %f", visualizationCounter / ((millis() - lastVisualizationUpdate) / 1000.0));
@@ -151,19 +177,19 @@ void renderFFT(void * parameter){
 
 void drawIcon(const uint32_t *icon) {
   animationCounter++;
-  leds.wait();
+  uint8_t brightness = 0;
   for (int i = 0; i < 64; i++) {
     uint32_t pixel = pgm_read_dword(icon + i);
-    byte red = (pixel >> 16) & 0xFF;
-    byte green = (pixel >> 8) & 0xFF;
-    byte blue = pixel & 0xFF;
-    Hsv hsv = Hsv(Rgb(red, green, blue));
+    uint8_t red = (pixel >> 16) & 0xFF;
+    uint8_t green = (pixel >> 8) & 0xFF;
+    uint8_t blue = pixel & 0xFF;
     log_v("%d. %08X, %02X %02X %02X", i, pixel, red, green, blue);
-    hsv.v = hsv.v * (0.1 + sin(animationCounter / 40.0) * 0.06);
-    leds[getLedIndex(i % 8, i / 8)] = hsv;
+    brightness = 50 + (sin(animationCounter / 40.0) * 50);
+    FastLED.setBrightness(  brightness );
+    leds[getLedIndex(i % 8, i / 8)] = CRGB(green, red, blue);
   }
-
-  leds.show();
+  delay(1);
+  FastLED.show();
 
 
 }
@@ -172,13 +198,12 @@ void audio_data_callback(const uint8_t *data, uint32_t len) {
   int item = 0;
   // Only prepare new samples if the queue is empty
   if (uxQueueMessagesWaiting(queue) == 0) {
-    //log_d("Queue is empty, adding new item");
+    //log_e("Queue is empty, adding new item");
     int byteOffset = 0;
     for (int i = 0; i < SAMPLES; i++) {
       sample_l_int = (int16_t)(((*(data + byteOffset + 1) << 8) | *(data + byteOffset)));
       sample_r_int = (int16_t)(((*(data + byteOffset + 3) << 8) | *(data + byteOffset +2)));
-      in = (sample_l_int + sample_r_int) / 2.0f;
-      vReal[i] = in; 
+      vReal[i] = (sample_l_int + sample_r_int) / 2.0f;;
       vImag[i] = 0;
       byteOffset = byteOffset + 4;
     }
@@ -190,10 +215,28 @@ void audio_data_callback(const uint8_t *data, uint32_t len) {
   a2dp_sink.audio_data_callback(data, len);
 }
 
+void playBootupSound() {
+  AudioFileSourcePROGMEM *in = new AudioFileSourcePROGMEM(sound, sizeof(sound));
+  AudioGeneratorAAC *aac = new AudioGeneratorAAC();
+  AudioOutputI2S *out = new AudioOutputI2S();
+  out->SetPinout(I2S_BCLK, I2S_LRC, I2S_DOUT );
+
+  aac->begin(in, out);
+
+  while (aac->isRunning()) {
+    drawIcon(HEART);
+    aac->loop();
+  }
+  aac->stop();
+}
+
 void setup() {
     pinMode(MODE_PIN, OUTPUT);
     pinMode(pushButton, INPUT);
     digitalWrite(MODE_PIN, HIGH);
+
+    FastLED.addLeds<WS2812B, DATA_PIN>(leds, NUM_LEDS);
+    playBootupSound();
 
     // The queue is used for communication between A2DP callback and the FFT processor
     queue = xQueueCreate( 1, sizeof( int ) );
@@ -204,13 +247,13 @@ void setup() {
     // This task will process the data acquired by the 
     // Bluetooth audio stream
     xTaskCreatePinnedToCore(
-      renderFFT,      // Function that should be called
-      "FFT Renderer",    // Name of the task (for debugging)
-      10000,               // Stack size (bytes)
+      renderFFT,          // Function that should be called
+      "FFT Renderer",     // Name of the task (for debugging)
+      10000,              // Stack size (bytes)
       NULL,               // Parameter to pass
       1,                  // Task priority
       NULL,               // Task handle
-      1          // Core you want to run the task on (0 or 1)
+      1                   // Core you want to run the task on (0 or 1)
     );
 
     a2dp_sink.set_pin_config(pin_config);
@@ -238,6 +281,5 @@ void loop() {
         hasDevicePlayedAudio = true;
         break;
   }
-
 
 }
