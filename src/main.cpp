@@ -23,15 +23,13 @@ SOFTWARE.
 */
 
 #include "BluetoothA2DPSink.h"
-#include <arduinoFFT.h> 
+#include <arduinoFFT.h>
 #include <FastLED.h>
 #include "AudioGeneratorAAC.h"
 #include "AudioOutputI2S.h"
 #include "AudioFileSourcePROGMEM.h"
 #include "sounds.h"
 #include "icons.h"
-
-
 
 // Audio Settings
 #define I2S_DOUT      25
@@ -49,8 +47,8 @@ SOFTWARE.
 
 // FFT Settings
 #define NUM_BANDS  8
-#define SAMPLES 512              
-#define SAMPLING_FREQUENCY 44100 
+#define SAMPLES 512
+#define SAMPLING_FREQUENCY 44100
 
 #define BRIGHTNESS 100
 
@@ -89,7 +87,12 @@ static const i2s_pin_config_t pin_config = {
 
 uint8_t hueOffset = 0;
 
-bool hasDevicePlayedAudio = false;
+// audio state management
+bool devicePlayedAudio = false;
+esp_a2d_audio_state_t currentAudioState = ESP_A2D_AUDIO_STATE_REMOTE_SUSPEND;
+
+// device connection management
+bool bleDeviceConnected = true;
 
 uint8_t getLedIndex(uint8_t x, uint8_t y) {
   //x = 7 - x;
@@ -151,7 +154,7 @@ void renderFFT(void * parameter){
       xQueueReceive(queue, &item, 0);
 
       uint8_t intensity;
-      
+
       FastLED.clear();
       FastLED.setBrightness(BRIGHTNESS);
       for (byte band = 0; band < NUM_BANDS; band++) {
@@ -190,8 +193,6 @@ void drawIcon(const uint32_t *icon) {
   }
   delay(1);
   FastLED.show();
-
-
 }
 
 void audio_data_callback(const uint8_t *data, uint32_t len) {
@@ -211,8 +212,15 @@ void audio_data_callback(const uint8_t *data, uint32_t len) {
     // Tell the task in core 1 that the processing can start
     xQueueSend(queue, &item, portMAX_DELAY);
   }
-  // pass the data to the i2s sink
-  a2dp_sink.audio_data_callback(data, len);
+}
+
+void connection_state_changed(esp_a2d_connection_state_t state, void *){
+  log_i("Connection state changed, new state: %d", state);
+  if (ESP_A2D_CONNECTION_STATE_CONNECTED == state) {
+    bleDeviceConnected = true;
+  } else {
+    bleDeviceConnected = false;
+  }
 }
 
 void playBootupSound() {
@@ -223,11 +231,13 @@ void playBootupSound() {
 
   aac->begin(in, out);
 
+  log_i("Playing bootup sound...");
   while (aac->isRunning()) {
     drawIcon(HEART);
     aac->loop();
   }
   aac->stop();
+  log_i("...done");
 }
 
 void setup() {
@@ -241,10 +251,10 @@ void setup() {
     // The queue is used for communication between A2DP callback and the FFT processor
     queue = xQueueCreate( 1, sizeof( int ) );
     if(queue == NULL){
-      Serial.println("Error creating the queue");
+      log_i("Error creating the A2DP->FFT queue");
     }
 
-    // This task will process the data acquired by the 
+    // This task will process the data acquired by the
     // Bluetooth audio stream
     xTaskCreatePinnedToCore(
       renderFFT,          // Function that should be called
@@ -259,27 +269,42 @@ void setup() {
     a2dp_sink.set_pin_config(pin_config);
     a2dp_sink.start((char*) DEVICE_NAME);
     // redirecting audio data to do FFT
-    esp_a2d_sink_register_data_callback(audio_data_callback);
-
+    a2dp_sink.set_stream_reader(audio_data_callback);
+    a2dp_sink.set_on_connection_state_changed(connection_state_changed);
 }
 
-
 void loop() {
+  // For some reason the audio state changed callback doesn't work properly -> need to fetch the state here.
+  //
+  // Otherwise you could hook this up in setup() as sketched below.
+  //
+  // void audio_state_changed(esp_a2d_audio_state_t state, void *){
+  //   log_i("audio state: %d", state);
+  // }
+  // a2dp_sink.set_on_audio_state_changed(audio_state_changed);
+
   esp_a2d_audio_state_t state = a2dp_sink.get_audio_state();
-  switch(state) {
-      case ESP_A2D_AUDIO_STATE_REMOTE_SUSPEND: 
-        if (hasDevicePlayedAudio) {
+  if (currentAudioState != state) {
+    log_i("Audio state changed; new state: %d", state);
+    currentAudioState = state;
+  }
+  switch (state) {
+    // Unclear how stopped and remote suspend really differ from one another. In ESP32-A2DP >= v1.6
+    // we seem to be getting the later when the client stops audio playback.
+    case ESP_A2D_AUDIO_STATE_REMOTE_SUSPEND:
+    case ESP_A2D_AUDIO_STATE_STOPPED:
+      if (bleDeviceConnected) {
+        if (devicePlayedAudio) {
           drawIcon(PAUSE);
         } else {
-          drawIcon(HEART);
+          drawIcon(BLE);
         }
-        break;
-      case ESP_A2D_AUDIO_STATE_STOPPED:
-        drawIcon(BLE); 
-        break;
-      case ESP_A2D_AUDIO_STATE_STARTED:
-        hasDevicePlayedAudio = true;
-        break;
+      } else {
+        drawIcon(HEART);
+      }
+      break;
+    case ESP_A2D_AUDIO_STATE_STARTED:
+      devicePlayedAudio = true;
+      break;
   }
-
 }
