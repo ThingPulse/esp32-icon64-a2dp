@@ -22,31 +22,30 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#include "BluetoothA2DPSink.h"
-#include <arduinoFFT.h>
-#include <FastLED.h>
+#include "AudioFileSourcePROGMEM.h"
 #include "AudioGeneratorAAC.h"
 #include "AudioOutputI2S.h"
-#include "AudioFileSourcePROGMEM.h"
-#include "sounds.h"
+#include "BluetoothA2DPSink.h"
 #include "icons.h"
+#include "sounds.h"
+#include <FastLED.h>
+#include <arduinoFFT.h>
 
 // Audio Settings
-#define I2S_DOUT      25
-#define I2S_BCLK      26
-#define I2S_LRC       22
-#define MODE_PIN      33
+#define I2S_DOUT    25
+#define I2S_BCLK    26
+#define I2S_LRC     22
+#define MODE_PIN    33
 
 // LED Settings
 #define LED_COUNT   64
 #define LED_PIN     32
 #define CHANNEL     0
 
-#define NUM_LEDS 64
 #define DATA_PIN 32
 
 // FFT Settings
-#define NUM_BANDS  8
+#define NUM_BANDS 8
 #define SAMPLES 512
 #define SAMPLING_FREQUENCY 44100
 
@@ -56,7 +55,7 @@ SOFTWARE.
 
 arduinoFFT FFT = arduinoFFT();
 BluetoothA2DPSink a2dp_sink;
-CRGB leds[NUM_LEDS];
+CRGB leds[LED_COUNT];
 
 int pushButton = 39;
 
@@ -78,12 +77,10 @@ uint32_t animationCounter = 0;
 int visualizationCounter = 0;
 int32_t lastVisualizationUpdate = 0;
 
-static const i2s_pin_config_t pin_config = {
-    .bck_io_num = I2S_BCLK,
-    .ws_io_num = I2S_LRC,
-    .data_out_num = I2S_DOUT,
-    .data_in_num = I2S_PIN_NO_CHANGE
-};
+static const i2s_pin_config_t pin_config = {.bck_io_num = I2S_BCLK,
+                                            .ws_io_num = I2S_LRC,
+                                            .data_out_num = I2S_DOUT,
+                                            .data_in_num = I2S_PIN_NO_CHANGE};
 
 uint8_t hueOffset = 0;
 
@@ -95,45 +92,44 @@ esp_a2d_audio_state_t currentAudioState = ESP_A2D_AUDIO_STATE_REMOTE_SUSPEND;
 bool bleDeviceConnected = true;
 
 uint8_t getLedIndex(uint8_t x, uint8_t y) {
-  //x = 7 - x;
+  // x = 7 - x;
   if (y % 2 == 0) {
     return y * 8 + x;
   } else {
-    return y*8 + (7 - x);
+    return y * 8 + (7 - x);
   }
 }
 
 void createBands(int i, int dsize) {
   uint8_t band = 0;
   if (i <= 2) {
-    band =  0; // 125Hz
+    band = 0; // 125Hz
   } else if (i <= 5) {
-    band =   1; // 250Hz
-  } else if (i <= 7)  {
-    band =  2; // 500Hz
+    band = 1; // 250Hz
+  } else if (i <= 7) {
+    band = 2; // 500Hz
   } else if (i <= 15) {
-    band =  3; // 1000Hz
+    band = 3; // 1000Hz
   } else if (i <= 30) {
-    band =  4; // 2000Hz
+    band = 4; // 2000Hz
   } else if (i <= 53) {
-    band =  5; // 4000Hz
+    band = 5; // 4000Hz
   } else if (i <= 106) {
-    band =  6;// 8000Hz
+    band = 6; // 8000Hz
   } else {
     band = 7;
   }
   int dmax = amplitude;
   if (dsize > dmax)
     dsize = dmax;
-  if (dsize > peak[band])
-  {
+  if (dsize > peak[band]) {
     peak[band] = dsize;
   }
 }
 
-void renderFFT(void * parameter){
+void renderFFT(void *parameter) {
   int item = 0;
-  for(;;) {
+  for (;;) {
     if (uxQueueMessagesWaiting(queue) > 0) {
 
       FFT.Windowing(vReal, SAMPLES, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
@@ -144,7 +140,8 @@ void renderFFT(void * parameter){
         peak[band] = 0;
       }
 
-      for (int i = 2; i < (SAMPLES / 2); i++) { // Don't use sample 0 and only first SAMPLES/2 are usable. Each array eleement represents a frequency and its value the amplitude.
+      // Don't use sample 0 and only first SAMPLES/2 are usable. Each array eleement represents a frequency and its value the amplitude.
+      for (int i = 2; i < (SAMPLES / 2); i++) {
         if (vReal[i] > 2000) { // Add a crude noise filter, 10 x amplitude or more
           createBands(i, (int)vReal[i] / amplitude);
         }
@@ -181,14 +178,14 @@ void renderFFT(void * parameter){
 void drawIcon(const uint32_t *icon) {
   animationCounter++;
   uint8_t brightness = 0;
-  for (int i = 0; i < 64; i++) {
+  for (int i = 0; i < LED_COUNT; i++) {
     uint32_t pixel = pgm_read_dword(icon + i);
     uint8_t red = (pixel >> 16) & 0xFF;
     uint8_t green = (pixel >> 8) & 0xFF;
     uint8_t blue = pixel & 0xFF;
     log_v("%d. %08X, %02X %02X %02X", i, pixel, red, green, blue);
     brightness = 50 + (sin(animationCounter / 40.0) * 50);
-    FastLED.setBrightness(  brightness );
+    FastLED.setBrightness(brightness);
     leds[getLedIndex(i % 8, i / 8)] = CRGB(green, red, blue);
   }
   delay(1);
@@ -199,12 +196,12 @@ void audio_data_callback(const uint8_t *data, uint32_t len) {
   int item = 0;
   // Only prepare new samples if the queue is empty
   if (uxQueueMessagesWaiting(queue) == 0) {
-    //log_e("Queue is empty, adding new item");
+    // log_e("Queue is empty, adding new item");
     int byteOffset = 0;
     for (int i = 0; i < SAMPLES; i++) {
       sample_l_int = (int16_t)(((*(data + byteOffset + 1) << 8) | *(data + byteOffset)));
-      sample_r_int = (int16_t)(((*(data + byteOffset + 3) << 8) | *(data + byteOffset +2)));
-      vReal[i] = (sample_l_int + sample_r_int) / 2.0f;;
+      sample_r_int = (int16_t)(((*(data + byteOffset + 3) << 8) | *(data + byteOffset + 2)));
+      vReal[i] = (sample_l_int + sample_r_int) / 2.0f;
       vImag[i] = 0;
       byteOffset = byteOffset + 4;
     }
@@ -214,7 +211,7 @@ void audio_data_callback(const uint8_t *data, uint32_t len) {
   }
 }
 
-void connection_state_changed(esp_a2d_connection_state_t state, void *){
+void connection_state_changed(esp_a2d_connection_state_t state, void *) {
   log_i("Connection state changed, new state: %d", state);
   if (ESP_A2D_CONNECTION_STATE_CONNECTED == state) {
     bleDeviceConnected = true;
@@ -227,7 +224,7 @@ void playBootupSound() {
   AudioFileSourcePROGMEM *in = new AudioFileSourcePROGMEM(sound, sizeof(sound));
   AudioGeneratorAAC *aac = new AudioGeneratorAAC();
   AudioOutputI2S *out = new AudioOutputI2S();
-  out->SetPinout(I2S_BCLK, I2S_LRC, I2S_DOUT );
+  out->SetPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
 
   aac->begin(in, out);
 
@@ -241,36 +238,35 @@ void playBootupSound() {
 }
 
 void setup() {
-    pinMode(MODE_PIN, OUTPUT);
-    pinMode(pushButton, INPUT);
-    digitalWrite(MODE_PIN, HIGH);
+  pinMode(MODE_PIN, OUTPUT);
+  pinMode(pushButton, INPUT);
+  digitalWrite(MODE_PIN, HIGH);
 
-    FastLED.addLeds<WS2812B, DATA_PIN>(leds, NUM_LEDS);
-    playBootupSound();
+  FastLED.addLeds<WS2812B, DATA_PIN>(leds, LED_COUNT);
+  playBootupSound();
 
-    // The queue is used for communication between A2DP callback and the FFT processor
-    queue = xQueueCreate( 1, sizeof( int ) );
-    if(queue == NULL){
-      log_i("Error creating the A2DP->FFT queue");
-    }
+  // The queue is used for communication between A2DP callback and the FFT
+  // processor
+  queue = xQueueCreate(1, sizeof(int));
+  if (queue == NULL) {
+    log_i("Error creating the A2DP->FFT queue");
+  }
 
-    // This task will process the data acquired by the
-    // Bluetooth audio stream
-    xTaskCreatePinnedToCore(
-      renderFFT,          // Function that should be called
-      "FFT Renderer",     // Name of the task (for debugging)
-      10000,              // Stack size (bytes)
-      NULL,               // Parameter to pass
-      1,                  // Task priority
-      NULL,               // Task handle
-      1                   // Core you want to run the task on (0 or 1)
-    );
+  // This task will process the data acquired by the Bluetooth audio stream
+  xTaskCreatePinnedToCore(renderFFT,      // Function that should be called
+                          "FFT Renderer", // Name of the task (for debugging)
+                          10000,          // Stack size (bytes)
+                          NULL,           // Parameter to pass
+                          1,              // Task priority
+                          NULL,           // Task handle
+                          1               // Core you want to run the task on (0 or 1)
+  );
 
-    a2dp_sink.set_pin_config(pin_config);
-    a2dp_sink.start((char*) DEVICE_NAME);
-    // redirecting audio data to do FFT
-    a2dp_sink.set_stream_reader(audio_data_callback);
-    a2dp_sink.set_on_connection_state_changed(connection_state_changed);
+  a2dp_sink.set_pin_config(pin_config);
+  a2dp_sink.start((char *)DEVICE_NAME);
+  // redirecting audio data to do FFT
+  a2dp_sink.set_stream_reader(audio_data_callback);
+  a2dp_sink.set_on_connection_state_changed(connection_state_changed);
 }
 
 void loop() {
@@ -289,22 +285,23 @@ void loop() {
     currentAudioState = state;
   }
   switch (state) {
-    // Unclear how stopped and remote suspend really differ from one another. In ESP32-A2DP >= v1.6
-    // we seem to be getting the later when the client stops audio playback.
-    case ESP_A2D_AUDIO_STATE_REMOTE_SUSPEND:
-    case ESP_A2D_AUDIO_STATE_STOPPED:
-      if (bleDeviceConnected) {
-        if (devicePlayedAudio) {
-          drawIcon(PAUSE);
-        } else {
-          drawIcon(BLE);
-        }
+  // Unclear how stopped and remote suspend really differ from one another. In
+  // ESP32-A2DP >= v1.6 we seem to be getting the later when the client stops
+  // audio playback.
+  case ESP_A2D_AUDIO_STATE_REMOTE_SUSPEND:
+  case ESP_A2D_AUDIO_STATE_STOPPED:
+    if (bleDeviceConnected) {
+      if (devicePlayedAudio) {
+        drawIcon(PAUSE);
       } else {
-        drawIcon(HEART);
+        drawIcon(BLE);
       }
-      break;
-    case ESP_A2D_AUDIO_STATE_STARTED:
-      devicePlayedAudio = true;
-      break;
+    } else {
+      drawIcon(HEART);
+    }
+    break;
+  case ESP_A2D_AUDIO_STATE_STARTED:
+    devicePlayedAudio = true;
+    break;
   }
 }
