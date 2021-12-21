@@ -72,8 +72,6 @@ QueueHandle_t queue;
 int16_t sample_l_int;
 int16_t sample_r_int;
 
-uint32_t animationCounter = 0;
-
 int visualizationCounter = 0;
 int32_t lastVisualizationUpdate = 0;
 
@@ -89,7 +87,7 @@ bool devicePlayedAudio = false;
 esp_a2d_audio_state_t currentAudioState = ESP_A2D_AUDIO_STATE_REMOTE_SUSPEND;
 
 // device connection management
-bool bleDeviceConnected = true;
+bool bleDeviceConnected = false;
 
 uint8_t getLedIndex(uint8_t x, uint8_t y) {
   // x = 7 - x;
@@ -176,16 +174,35 @@ void renderFFT(void *parameter) {
 }
 
 void drawIcon(const uint32_t *icon) {
-  animationCounter++;
-  uint8_t brightness = 0;
+  // As this is invoked from loop() we can achieve a pulsing effect by
+  // changing the brightness with every invocation. Goal: make it look
+  // like a human breathing pattern (or like a contracting heart).
+  //
+  // The human breathing algorithm appears to be e^sin(x).
+  // Plotted: https://www.wolframalpha.com/input/?i=e%5Esin%28x%29
+  // Minimum & maximum amplitude are as follows:
+  // min(e^sin(x)) = e^-1 = 1/e = 0.36787944
+  // max(e^sin(x)) = e^1  = e   = 2.71828182
+  //
+  // Hence, in order for the minimum to be 0 you need to offset the
+  // function by 1/e: e^sin(x) - 1/e. The maximum of this function thus
+  // becomes e - 1/e = 2.35040238
+  //
+  // To map this to a (brightness) range of [0, 100]:
+  // -> multiply each value with 100/(e - 1/e): 42.54590641
+  // Plotted: https://www.wolframalpha.com/input/?i=%28e%5Esin%28x%29+-+1%2Fe%29+*+100%2F%28e+-+1%2Fe%29
+  //
+  // Multiply x (i.e. the current time) by any value to adjust the frequency.
+  //
+  // Inspiration: https://sean.voisen.org/blog/2011/10/breathing-led-with-arduino/
+  uint8_t brightness = (exp(sin(millis() / 2000.0 * PI)) - 0.36787944) * 42.54590641;
+  FastLED.setBrightness(brightness);
   for (int i = 0; i < LED_COUNT; i++) {
     uint32_t pixel = pgm_read_dword(icon + i);
     uint8_t red = (pixel >> 16) & 0xFF;
     uint8_t green = (pixel >> 8) & 0xFF;
     uint8_t blue = pixel & 0xFF;
     log_v("%d. %08X, %02X %02X %02X", i, pixel, red, green, blue);
-    brightness = 50 + (sin(animationCounter / 40.0) * 50);
-    FastLED.setBrightness(brightness);
     leds[getLedIndex(i % 8, i / 8)] = CRGB(green, red, blue);
   }
   delay(1);
